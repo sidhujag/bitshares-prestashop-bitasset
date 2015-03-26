@@ -494,106 +494,115 @@ class CurrencyCore extends ObjectModel
 		$currencies = Currency::getCurrencies(true, false, true);
 		if (!$default_currency = Currency::getDefaultCurrency())
 			return Tools::displayError('No default currency');
-		$btsfeeds = Tools::file_get_contents('https://api.bitsharesblocks.com/v2/assets?callback=c');
-		
-		$feed = new SimpleXMLElement("<list></list>");	
-		if($btsfeeds)
-		{
-			$startPos = strpos($btsfeeds, '{');
-			if($startPos === false)
+		try{	
+			$btsfeeds = Tools::file_get_contents('https://api.bitsharesblocks.com/v2/assets?callback=c');
+			
+			$feed = new SimpleXMLElement("<list></list>");	
+			if($btsfeeds)
 			{
-				return Tools::displayError('Problem parsing asset feed from bitsharsblocks.com');
-			}
-			$btsfeeds = substr($btsfeeds, $startPos);
-			$btsfeeds = trim($btsfeeds);
-			$btsfeeds = rtrim($btsfeeds, ');');
-			$btsfeeds = trim($btsfeeds, '"');
-			$btsfeeds = str_replace('\"', '"', $btsfeeds);
-			$btsfeeds = json_decode($btsfeeds, TRUE);
-			if(isset($btsfeeds['assets']))
-			{	
-				foreach ($btsfeeds['assets'] as $asset)
+				$startPos = strpos($btsfeeds, '{');
+				if($startPos === false)
 				{
-					if(isset($default_currency_rate)) break;
-					$symbol = strval($asset['symbol']);
-					if($symbol === strval($default_currency->iso_code))
-					{	
-						foreach ($btsfeeds['feeds'] as $btsfeed)
-						{	
-							if($btsfeed['_id'] === $asset['_id'])
-							{		
-								$value = (float)$btsfeed['medianFeed'];
-								$default_currency_rate =  $value;
-								break;														
-							}						
-						}																
-					}						
-				}	
-				if(isset($default_currency_rate))
-				{			
-					// go through each asset and price feed, match them up
+					return Tools::displayError('Problem parsing asset feed from bitsharsblocks.com');
+				}
+				$btsfeeds = substr($btsfeeds, $startPos);
+				$btsfeeds = trim($btsfeeds);
+				$btsfeeds = rtrim($btsfeeds, ');');
+				$btsfeeds = trim($btsfeeds, '"');
+				$btsfeeds = str_replace('\"', '"', $btsfeeds);
+				$btsfeeds = json_decode($btsfeeds, TRUE);
+				if(isset($btsfeeds['assets']))
+				{	
 					foreach ($btsfeeds['assets'] as $asset)
-					{		
+					{
+						if(isset($default_currency_rate)) break;
 						$symbol = strval($asset['symbol']);
 						if($symbol == 'GOLD')
 							$symbol = 'XAU';
 						else if($symbol == 'SILVER')
-							$symbol = 'XAG';
-						$child = $feed->addChild('currency');
-						$child->addAttribute('iso_code', $symbol);																					
-						foreach ($btsfeeds['feeds'] as $btsfeed)
+							$symbol = 'XAG';					
+						if($symbol === strval($default_currency->iso_code))
 						{	
-							if($btsfeed['_id'] === $asset['_id'])
-							{		
-								$value = (float)$btsfeed['medianFeed'];	
-								$price = 0.0;
-								if($default_currency_rate > 0 && $value > 0)
-								{	
-									$price = (1.0/($default_currency_rate/$value));
-								}	
-								$child->addAttribute('rate', $price );																
-							}						
+							foreach ($btsfeeds['feeds'] as $btsfeed)
+							{	
+								if($btsfeed['_id'] === $asset['_id'])
+								{		
+									$value = (float)$btsfeed['medianFeed'];
+									$default_currency_rate =  $value;
+									break;														
+								}						
+							}																
+						}						
+					}	
+					if(isset($default_currency_rate))
+					{			
+						// go through each asset and price feed, match them up
+						foreach ($btsfeeds['assets'] as $asset)
+						{		
+							$symbol = strval($asset['symbol']);
+							if($symbol == 'GOLD')
+								$symbol = 'XAU';
+							else if($symbol == 'SILVER')
+								$symbol = 'XAG';
+							$child = $feed->addChild('currency');
+							$child->addAttribute('iso_code', $symbol);																					
+							foreach ($btsfeeds['feeds'] as $btsfeed)
+							{	
+								if($btsfeed['_id'] === $asset['_id'])
+								{		
+									$value = (float)$btsfeed['medianFeed'];	
+									$price = 0.0;
+									if($default_currency_rate > 0 && $value > 0)
+									{	
+										$price = (1.0/($default_currency_rate/$value));
+									}	
+									$child->addAttribute('rate', $price );																
+								}						
+							}
 						}
-					}
-									
+										
+					}	
 				}	
-			}	
-		}
-		$btsCurrencies = array();	
-		foreach ($currencies as $currency)
-		{
-			if ($currency->id != $default_currency->id)
-			{
-				$currency->refreshCurrency($feed, $default_currency->iso_code, $default_currency);
-			}	
-					
-			if(stripos($currency->name, 'bit') !== FALSE)
-			{ 
-				array_push($btsCurrencies, $currency);
-			}			
-		}
-		Currency::saveHistorical($btsCurrencies);
-		foreach ($btsCurrencies as $btsCurrency)
-		{		
-			$tag = new Tag(null, $btsCurrency->iso_code, Configuration::get('PS_LANG_DEFAULT'));		
-			$productsWithTags = $tag->getProducts();
-			foreach ($productsWithTags as $productWithTag)
-			{						
-				$features = Product::getFrontFeaturesStatic(Configuration::get('PS_LANG_DEFAULT'), $productWithTag['id_product']);
-				foreach ($features as $feature)
-				{
-					if($feature['name'] !== 'Weight') continue;
-					$weightStr = $feature['value'];
-					$weightTokens = explode(' ',$weightStr); 
-					if(count($weightTokens) != 2) return Tools::displayError('Weight feature is not set correctly for one of your products: '. $weightStr . '. Should follow convention of <qty>(space)<string> where <metric> is the name of your metric ie: ounces or grams, <qty> followed by a (space) and then the one word <metric> is allowed. IE: Metric tons should be written as Metric-Tons to avoid the extra space.');
-					$weight = Currency::convertToOunces($weightTokens[0], $weightTokens[1]); 
-					$newPrice = Tools::convertPriceFull($weight,$btsCurrency);
-					$query = 'UPDATE `'._DB_PREFIX_.'product_shop` SET `price` = '.$newPrice.' WHERE `id_product` = '.(int)$productWithTag['id_product'];
-					DB::getInstance()->execute($query);
-					break;
-				}													
 			}
-		}						
+			$btsCurrencies = array();	
+			foreach ($currencies as $currency)
+			{
+				if ($currency->id != $default_currency->id && isset($feed->currency))
+				{
+					$currency->refreshCurrency($feed, $default_currency->iso_code, $default_currency);
+				}	
+						
+				if(stripos($currency->name, 'bit') !== FALSE)
+				{ 
+					array_push($btsCurrencies, $currency);
+				}			
+			}
+			Currency::saveHistorical($btsCurrencies);
+			foreach ($btsCurrencies as $btsCurrency)
+			{		
+				$tag = new Tag(null, $btsCurrency->iso_code, Configuration::get('PS_LANG_DEFAULT'));		
+				$productsWithTags = $tag->getProducts();
+				foreach ($productsWithTags as $productWithTag)
+				{						
+					$features = Product::getFrontFeaturesStatic(Configuration::get('PS_LANG_DEFAULT'), $productWithTag['id_product']);
+					foreach ($features as $feature)
+					{
+						if($feature['name'] !== 'Weight') continue;
+						$weightStr = $feature['value'];
+						$weightTokens = explode(' ',$weightStr); 
+						if(count($weightTokens) != 2) return Tools::displayError('Weight feature is not set correctly for one of your products: '. $weightStr . '. Should follow convention of <qty>(space)<string> where <metric> is the name of your metric ie: ounces or grams, <qty> followed by a (space) and then the one word <metric> is allowed. IE: Metric tons should be written as Metric-Tons to avoid the extra space.');
+						$weight = Currency::convertToOunces($weightTokens[0], $weightTokens[1]); 
+						$newPrice = Tools::convertPriceFull($weight,$btsCurrency);
+						$query = 'UPDATE `'._DB_PREFIX_.'product_shop` SET `price` = '.$newPrice.' WHERE `id_product` = '.(int)$productWithTag['id_product'];
+						DB::getInstance()->execute($query);
+						break;
+					}													
+				}
+			}	
+		}
+		catch (Exception $e) {
+			return Tools::displayError($e->getMessage());
+		}								
 	}
 		
 	/**
