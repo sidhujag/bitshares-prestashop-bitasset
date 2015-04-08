@@ -288,33 +288,6 @@ class CurrencyCore extends ObjectModel
 		WHERE `deleted` = 0
 		AND `id_currency` = '.(int)($id_currency));
 	}
-	public static function saveHistorical($currencyList)
-	{
-
-		$res = Db::getInstance()->execute('
-		CREATE TABLE IF NOT EXISTS `'._DB_PREFIX_.'currency_historical` (
-		`id_currency_historical` INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
-		`date_add` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		`iso_code` varchar(3) NOT NULL,
-		`conversion_rate` decimal(13,6)	NOT NULL,
-		PRIMARY KEY (`id_currency_historical`)
-		) ENGINE='._MYSQL_ENGINE_.' DEFAULT CHARSET=latin1 AUTO_INCREMENT=1;'); /* MyISAM + latin1 = Smaller/faster */
-		$sql = 'SELECT COUNT(*) FROM `'._DB_PREFIX_.'currency_historical` WHERE DATE(date_add) = CURDATE()';
-		$count = Db::getInstance()->getValue($sql);			
-		if($count < count($currencyList))
-		{
-			Db::getInstance()->execute('TRUNCATE TABLE `'._DB_PREFIX_.'currency_historical`');	
-			$sql = 'INSERT INTO `'._DB_PREFIX_.'currency_historical` (`iso_code`, `conversion_rate`) VALUES ';	
-			foreach ($currencyList as $currency)
-			{			
-				$sql .='("'.$currency->iso_code.'",'.$currency->conversion_rate.'),';
-			}
-			$sql = rtrim($sql, ',');
-			$res = Db::getInstance()->execute($sql);					
-		}
-				
-	}
-
 	/**
 	 * @static
 	 * @param $iso_code
@@ -495,75 +468,57 @@ class CurrencyCore extends ObjectModel
 		if (!$default_currency = Currency::getDefaultCurrency())
 			return Tools::displayError('No default currency');
 		try{	
-			$btsfeeds = Tools::file_get_contents('https://api.bitsharesblocks.com/v2/assets?callback=c');
-			
-			$feed = new SimpleXMLElement("<list></list>");	
-			if($btsfeeds)
+			$assets = '';
+			foreach ($currencies as $currency)
 			{
-				$startPos = strpos($btsfeeds, '{');
-				if($startPos === false)
-				{
-					return Tools::displayError('Problem parsing asset feed from bitsharsblocks.com');
-				}
-				$btsfeeds = substr($btsfeeds, $startPos);
-				$btsfeeds = trim($btsfeeds);
-				$btsfeeds = rtrim($btsfeeds, ');');
-				$btsfeeds = trim($btsfeeds, '"');
-				$btsfeeds = str_replace('\"', '"', $btsfeeds);
-				$btsfeeds = json_decode($btsfeeds, TRUE);
-				if(isset($btsfeeds['assets']))
-				{	
-					foreach ($btsfeeds['assets'] as $asset)
-					{
-						if(isset($default_currency_rate)) break;
-						$symbol = strval($asset['symbol']);
-						if($symbol == 'GOLD')
-							$symbol = 'XAU';
-						else if($symbol == 'SILVER')
-							$symbol = 'XAG';					
-						if($symbol === strval($default_currency->iso_code))
-						{	
-							foreach ($btsfeeds['feeds'] as $btsfeed)
-							{	
-								if($btsfeed['_id'] === $asset['_id'])
-								{		
-									$value = (float)$btsfeed['medianFeed'];
-									$default_currency_rate =  $value;
-									break;														
-								}						
-							}																
-						}						
-					}	
-					if(isset($default_currency_rate))
-					{			
-						// go through each asset and price feed, match them up
-						foreach ($btsfeeds['assets'] as $asset)
-						{		
-							$symbol = strval($asset['symbol']);
-							if($symbol == 'GOLD')
-								$symbol = 'XAU';
-							else if($symbol == 'SILVER')
-								$symbol = 'XAG';
-							$child = $feed->addChild('currency');
-							$child->addAttribute('iso_code', $symbol);																					
-							foreach ($btsfeeds['feeds'] as $btsfeed)
-							{	
-								if($btsfeed['_id'] === $asset['_id'])
-								{		
-									$value = (float)$btsfeed['medianFeed'];	
-									$price = 0.0;
-									if($default_currency_rate > 0 && $value > 0)
-									{	
-										$price = (1.0/($default_currency_rate/$value));
-									}	
-									$child->addAttribute('rate', $price );																
-								}						
-							}
-						}
-										
-					}	
-				}	
+				$symbol = $currency->iso_code;
+				if($symbol == 'XAU')
+					$symbol = 'GOLD';
+				else if($symbol == 'XAG')
+					$symbol = 'SILVER';
+				$assets = $assets.$symbol.',';
 			}
+			$assets = rtrim($assets, ',');
+			$btsfeeds = Tools::file_get_contents(Context::getContext()->shop->getBaseURL() . 'bitshares/checkout/callbacks/callback_getfeedprices.php?assets='.$assets);		
+			echo json_encode($btsfeeds);
+			$feed = new SimpleXMLElement("<list></list>");	
+			$btsfeeds = json_decode($btsfeeds, TRUE);
+			foreach ($btsfeeds as $asset)
+			{
+				if(isset($default_currency_rate)) break;
+				$symbol = strval($asset['asset']);
+				if($symbol == 'GOLD')
+					$symbol = 'XAU';
+				else if($symbol == 'SILVER')
+					$symbol = 'XAG';					
+				if($symbol === strval($default_currency->iso_code))
+				{	
+					$default_currency_rate = (float)$asset['median_price'];											
+					break;															
+				}						
+			}	
+			if(isset($default_currency_rate))
+			{			
+				// go through each asset and price feed, match them up
+				foreach ($btsfeeds as $asset)
+				{		
+					$symbol = strval($asset['asset']);
+					if($symbol == 'GOLD')
+						$symbol = 'XAU';
+					else if($symbol == 'SILVER')
+						$symbol = 'XAG';
+					$child = $feed->addChild('currency');
+					$child->addAttribute('iso_code', $symbol);																					
+					$value = (float)$asset['median_price'];	
+					$price = 0.0;
+					if($default_currency_rate > 0 && $value > 0)
+					{	
+						$price = (1.0/($default_currency_rate/$value));
+					}	
+					$child->addAttribute('rate', $price );																
+				}				
+			}		
+			
 			$btsCurrencies = array();	
 			foreach ($currencies as $currency)
 			{
@@ -577,7 +532,6 @@ class CurrencyCore extends ObjectModel
 					array_push($btsCurrencies, $currency);
 				}			
 			}
-			Currency::saveHistorical($btsCurrencies);
 			foreach ($btsCurrencies as $btsCurrency)
 			{		
 				$tag = new Tag(null, $btsCurrency->iso_code, Configuration::get('PS_LANG_DEFAULT'));		
